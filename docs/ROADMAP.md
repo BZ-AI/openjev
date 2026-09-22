@@ -12,7 +12,20 @@ Status: implemented in this package.
 - Goal Loop auditor integration;
 - privacy-hashed tamper-evident JSONL events.
 
-## 0.2 — evaluation harness
+## 0.2 — adaptive runtime + evaluation harness
+Status: implemented in this package.
+
+- optional Laya / Laya-MLX local provider;
+- System One-compatible HTTP/Jev provider;
+- deterministic pre-model gates;
+- confidence + option-count escalation;
+- temperature-aware routing hooks;
+- ECE / Brier / latency measurement;
+- local-first cascade threshold sweeps;
+- exact support for the MIT-licensed 40-case yibie cascade benchmark;
+- non-redistributing import path for the 500-case laya-playground benchmark.
+
+## 0.3 — first-party Goal Loop evidence
 
 Build a first-party eval set from real, consented Goal Loop sessions.
 
@@ -32,7 +45,7 @@ Metrics:
 - unnecessary-escalation rate;
 - cost and latency per audit.
 
-## 0.3 — multi-provider benchmark
+## 0.4 — wider multi-provider benchmark
 
 Run the same OpenJev contract over:
 - local open-weight models;
@@ -41,7 +54,7 @@ Run the same OpenJev contract over:
 
 Do not optimize on the public benchmark only. Keep a private holdout set.
 
-## 0.4 — trained open decision model
+## 0.5 — trained open decision model (only if evidence warrants it)
 
 Goal: stop paying a generative-model output tax for narrow decisions.
 

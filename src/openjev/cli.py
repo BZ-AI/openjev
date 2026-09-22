@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .engine import OpenJev
 from .models import Choice, Noul, Score
-from .providers import OpenAICompatibleProvider
+from .providers import JevProvider, LayaProvider, OpenAICompatibleProvider
 
 
 def _load_questions(raw):
@@ -27,19 +27,44 @@ def _load_questions(raw):
 def main() -> None:
     parser = argparse.ArgumentParser(description="OpenJev typed decision CLI")
     parser.add_argument("spec", type=Path, help="JSON file containing state and questions")
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--base-url", default="http://localhost:8000/v1")
+    parser.add_argument(
+        "--backend",
+        choices=["openai", "laya", "laya-mlx", "jev"],
+        default="openai",
+    )
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--base-url", default=None)
     parser.add_argument("--api-key", default=None)
+    parser.add_argument("--task", default=None, help="Optional Laya router task override")
+    parser.add_argument("--lang", default=None, help="Optional Laya router language override")
+    parser.add_argument("--preload", action="store_true", help="Preload Laya router checkpoints")
     parser.add_argument("--no-strict-schema", action="store_true")
     args = parser.parse_args()
 
     spec = json.loads(args.spec.read_text(encoding="utf-8"))
-    provider = OpenAICompatibleProvider(
-        model=args.model,
-        api_key=args.api_key,
-        base_url=args.base_url,
-        strict_json_schema=not args.no_strict_schema,
-    )
+    if args.backend == "openai":
+        if not args.model:
+            parser.error("--model is required with --backend openai")
+        provider = OpenAICompatibleProvider(
+            model=args.model,
+            api_key=args.api_key,
+            base_url=args.base_url or "http://localhost:8000/v1",
+            strict_json_schema=not args.no_strict_schema,
+        )
+    elif args.backend == "jev":
+        provider = JevProvider(
+            model=args.model or "jev-latest",
+            api_key=args.api_key,
+            base_url=args.base_url or "https://api.typesafe.ai",
+        )
+    else:
+        provider = LayaProvider(
+            package="laya_mlx" if args.backend == "laya-mlx" else "laya",
+            checkpoint=args.model,
+            task=args.task,
+            lang=args.lang,
+            preload=args.preload,
+        )
     try:
         result = OpenJev(provider).evaluate(
             state=spec["state"],

@@ -24,7 +24,7 @@ Layer B — semantic judgments
   how risky is premature completion?
 ```
 
-Layer A always wins.
+Layer A always wins. In OpenJev v0.2, a failed Layer A gate also short-circuits the semantic call entirely: no Laya/Jev/LLM request is made when code already knows completion is impossible.
 
 ## What to add to Goal Loop 1.1.0
 
@@ -64,6 +64,26 @@ complex task detected
        + semantic audit
        + exit gate
 ```
+
+## Adaptive runtime in Goal Loop
+
+`GoalLoopAuditor` accepts either a plain `OpenJev` engine or an `AdaptiveDecisionRuntime`.
+With the adaptive runtime, Goal Loop can use a fast local typed-decision backend first
+(for example Laya) and escalate only uncertain semantic cases to a stronger backend.
+The selected route and escalation reasons are recorded under `semantic.routing` in the
+auditor result.
+
+This means the practical flow is:
+
+```text
+hard fact fails      -> return deterministic action, zero model calls
+hard facts pass      -> fast semantic decision
+fast confidence good -> keep local result
+fast uncertain       -> optional strong-provider escalation
+```
+
+Thresholds and temperatures must be calibrated on representative Goal Loop cases rather
+than copied from a public benchmark.
 
 ## Suggested semantic questions
 

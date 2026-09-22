@@ -9,17 +9,27 @@ from .models import (
     Score,
     ScoreAnswer,
 )
+from .router import (
+    AdaptiveDecisionRuntime,
+    AdaptiveResult,
+    DeterministicGate,
+    RoutingPolicy,
+)
 
 __all__ = [
+    "AdaptiveDecisionRuntime",
+    "AdaptiveResult",
     "Choice",
     "ChoiceAnswer",
     "DecisionResponse",
+    "DeterministicGate",
     "GoalLoopAuditor",
     "GoalLoopDecision",
     "GoalLoopPolicy",
     "Noul",
     "NoulAnswer",
     "OpenJev",
+    "RoutingPolicy",
     "Score",
     "ScoreAnswer",
 ]

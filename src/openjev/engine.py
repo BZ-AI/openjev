@@ -61,7 +61,7 @@ class OpenJev:
             result = self.provider.decide(payload, schema, repair_hint=repair_hint)
             attempts.append(result)
             try:
-                answers, debug = self._decode(questions, result.data)
+                answers, debug = self._decode(questions, result.data, provider_debug=result.debug)
                 return DecisionResponse(
                     answers=answers,
                     usage=Usage(
@@ -87,7 +87,13 @@ class OpenJev:
 
         raise AssertionError("unreachable")
 
-    def _decode(self, questions: Mapping[str, Question], raw: dict[str, Any]):
+    def _decode(
+        self,
+        questions: Mapping[str, Question],
+        raw: dict[str, Any],
+        *,
+        provider_debug: Mapping[str, Any] | None = None,
+    ):
         raw_answers = raw["answers"]
         if set(raw_answers) != set(questions):
             missing = sorted(set(questions) - set(raw_answers))
@@ -96,6 +102,7 @@ class OpenJev:
 
         decoded = {}
         diagnostics = {}
+        native_confidence = dict((provider_debug or {}).get("native_confidence") or {})
 
         for qid, q in questions.items():
             value = raw_answers[qid]
@@ -107,6 +114,10 @@ class OpenJev:
                 decoded[qid] = NoulAnswer(
                     probability=probability,
                     value=probability >= self.noul_threshold,
+                    confidence=_validated_confidence(
+                        native_confidence.get(qid),
+                        fallback=max(probability, 1.0 - probability),
+                    ),
                 )
                 diagnostics[qid] = {"normalization_error": 0.0}
                 continue
@@ -123,7 +134,10 @@ class OpenJev:
                 decoded[qid] = ChoiceAnswer(
                     choice=selected,
                     probabilities=probs,
-                    confidence=choice_confidence(probs),
+                    confidence=_validated_confidence(
+                        native_confidence.get(qid),
+                        fallback=choice_confidence(probs),
+                    ),
                 )
                 diagnostics[qid] = {"normalization_error": error}
                 continue
@@ -136,7 +150,10 @@ class OpenJev:
                 decoded[qid] = ScoreAnswer(
                     score=score_expected_value(probs),
                     probabilities=probs,
-                    confidence=score_confidence(probs),
+                    confidence=_validated_confidence(
+                        native_confidence.get(qid),
+                        fallback=score_confidence(probs),
+                    ),
                 )
                 diagnostics[qid] = {"normalization_error": error}
                 continue
@@ -144,6 +161,15 @@ class OpenJev:
             raise TypeError(f"Unsupported question type: {type(q)!r}")
 
         return decoded, diagnostics
+
+
+def _validated_confidence(value: Any, *, fallback: float) -> float:
+    if value is None:
+        return fallback
+    number = float(value)
+    if not 0.0 <= number <= 1.0:
+        return fallback
+    return number
 
 
 def _sum_optional(values):

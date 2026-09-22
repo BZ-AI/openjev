@@ -8,3 +8,6 @@ build/
 *.egg-info/
 .env
 audit.jsonl
+uv.lock
+reports/
+benchmarks/*.local.jsonl

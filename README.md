@@ -14,8 +14,9 @@ application state
     -> deterministic code policy
 ```
 
-OpenJev v0.1 is a working reference implementation that can use an
-OpenAI-compatible LLM endpoint as the semantic backend. It provides:
+OpenJev v0.2 is an adaptive decision runtime: deterministic rules first, a fast
+local typed-decision model second, and a stronger fallback only when the route needs it.
+It provides:
 
 - `Noul`: yes/no probability.
 - `Choice`: one label from a fixed set + probability distribution + confidence.
@@ -25,6 +26,11 @@ OpenAI-compatible LLM endpoint as the semantic backend. It provides:
 - probability normalization;
 - malformed-output retry hooks;
 - provider-independent engine;
+- optional Laya and Laya-MLX local providers (loaded lazily; weights are not vendored);
+- a System One-compatible HTTP/Jev provider for remote or local compatible servers;
+- deterministic pre-model gates;
+- confidence-, calibration-, and option-count-aware local-first escalation;
+- reproducible accuracy / ECE / Brier / latency benchmarks and cascade sweeps;
 - tamper-evident privacy-hashed JSONL audit events;
 - a Goal Loop / Auditor integration showing how deterministic hard gates and
   probabilistic semantic judgments can be composed safely.
@@ -93,6 +99,42 @@ result = jev.evaluate(
 print(result.model_dump_json(indent=2))
 ```
 
+## Adaptive local-first runtime
+
+Install the optional local backend:
+
+```bash
+python -m pip install -e '.[laya]'
+```
+
+Then compose a fast local engine with an optional strong fallback:
+
+```python
+from openjev import AdaptiveDecisionRuntime, OpenJev, RoutingPolicy
+from openjev.providers import JevProvider, LayaProvider
+
+runtime = AdaptiveDecisionRuntime(
+    OpenJev(LayaProvider()),
+    OpenJev(JevProvider()),  # only if you intentionally configure the hosted/API fallback
+    policy=RoutingPolicy(confidence_threshold=0.60, max_fast_choice_options=20),
+)
+```
+
+See `docs/ADAPTIVE_RUNTIME.md` for gates, per-question thresholds and temperature calibration.
+
+## Reproduce the comparisons
+
+The MIT-licensed 40-case Chinese support benchmark discussed in the independent
+Laya/Jev cascade evaluation is included with attribution:
+
+```bash
+openjev-bench benchmarks/yibie_support_40.json --fast laya
+```
+
+Add `--strong jev` only when you explicitly want to make hosted Jev calls. The second
+500-example multi-domain benchmark is supported through a converter instead of copying
+source texts whose datasets restrict redistribution. See `docs/BENCHMARKS.md`.
+
 ## Goal Loop integration
 
 See:
@@ -110,9 +152,10 @@ that and declare completion.
 
 ## Project status
 
-`0.1.0` is an adapter/runtime, **not a new trained foundation model**.
-The roadmap describes how to evolve toward an actually trained open decision model
-using open or user-owned labels rather than proprietary Jev outputs.
+`0.2.0` is an adaptive runtime, **not a new trained foundation model**.
+The current focus is making open/hosted decision models useful in real agents: route the
+right cases locally, escalate uncertainty, measure calibration, and keep hard facts in code.
+A first-party trained model is deferred until real workload evidence says it is needed.
 
 ## Compatibility position
 

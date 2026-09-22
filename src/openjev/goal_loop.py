@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .engine import OpenJev
 from .models import Choice, Noul, Score
+from .router import AdaptiveDecisionRuntime, AdaptiveResult
 
 
 class _StrictModel(BaseModel):
@@ -62,14 +63,25 @@ class GoalLoopAuditor:
     state requires semantic judgment.
     """
 
-    def __init__(self, engine: OpenJev, policy: GoalLoopPolicy | None = None):
+    def __init__(
+        self,
+        engine: OpenJev | AdaptiveDecisionRuntime,
+        policy: GoalLoopPolicy | None = None,
+    ):
         self.engine = engine
         self.policy = policy or GoalLoopPolicy()
 
     def audit(self, state: GoalLoopState) -> GoalLoopDecision:
         hard_reasons = self._hard_gate_reasons(state)
+        if hard_reasons:
+            return GoalLoopDecision(
+                hard_gate_passed=False,
+                final_action=self._deterministic_action_for_hard_failure(state),
+                reasons=hard_reasons,
+                semantic={"skipped": "deterministic hard gate failed before model inference"},
+            )
 
-        semantic = self.engine.evaluate(
+        semantic_result = self.engine.evaluate(
             state=state.model_dump(mode="json"),
             questions={
                 "missing_requirement": Noul(
@@ -118,6 +130,20 @@ class GoalLoopAuditor:
             },
         )
 
+        route_trace = None
+        if isinstance(semantic_result, AdaptiveResult):
+            route_trace = semantic_result.trace.model_dump(mode="json")
+            semantic = semantic_result.response
+            if semantic is None:
+                return GoalLoopDecision(
+                    hard_gate_passed=True,
+                    final_action="ESCALATE",
+                    reasons=["adaptive semantic runtime returned no decision response"],
+                    semantic={"routing": route_trace},
+                )
+        else:
+            semantic = semantic_result
+
         answers = semantic.answers
         missing = answers["missing_requirement"]
         evidence_gap = answers["evidence_gap"]
@@ -133,11 +159,9 @@ class GoalLoopAuditor:
         if evidence_gap.probability >= self.policy.evidence_gap_threshold:
             reasons.append(f"semantic evidence-gap probability={evidence_gap.probability:.3f}")
 
-        hard_gate_passed = not hard_reasons
+        hard_gate_passed = True
 
-        if not hard_gate_passed:
-            action = self._deterministic_action_for_hard_failure(state)
-        elif missing.probability >= self.policy.missing_requirement_threshold:
+        if missing.probability >= self.policy.missing_requirement_threshold:
             action = "CONTINUE"
         elif evidence_gap.probability >= self.policy.evidence_gap_threshold:
             action = "REVALIDATE"
@@ -157,11 +181,15 @@ class GoalLoopAuditor:
                     "model suggested completion but semantic completion threshold was not met"
                 )
 
+        semantic_payload = semantic.model_dump(mode="json")
+        if route_trace is not None:
+            semantic_payload["routing"] = route_trace
+
         return GoalLoopDecision(
             hard_gate_passed=hard_gate_passed,
             final_action=action,
             reasons=reasons,
-            semantic=semantic.model_dump(mode="json"),
+            semantic=semantic_payload,
         )
 
     @staticmethod

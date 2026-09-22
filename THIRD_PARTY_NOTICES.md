@@ -14,6 +14,21 @@ Those repositories document public concepts such as typed `Choice`, `Noul`, and
 `Score` questions, probability distributions, confidence handling, and provider
 adapters.
 
+OpenJev v0.2 also interoperates with public open-source work without vendoring its
+model code or weights:
+
+- `NandhaKishorM/laya` — Apache-2.0; optional local typed-decision backend.
+- `MohammadAsadi-7/laya-mlx` — MLX port used through an optional adapter on Apple Silicon.
+- `yibie/laya-jev-lab` — MIT; the file `benchmarks/yibie_support_40.json` is copied from
+  its 40-case support benchmark. The upstream MIT text is preserved in
+  `licenses/YIBIE_LAYA_JEV_LAB_MIT.txt`.
+- `wdobry/laya-playground` — MIT benchmark methodology. OpenJev implements a compatible
+  converter, but intentionally does not redistribute the benchmark's source texts because
+  some underlying datasets impose separate restrictions.
+
+The Laya adapters call the upstream packages through their documented public APIs. No Laya
+source code or model weights are copied into OpenJev.
+
 OpenJev does **not** contain TypeSafe AI's proprietary Jev model, weights, hidden
 architecture, private training data, private training code, or private sampler.
 
