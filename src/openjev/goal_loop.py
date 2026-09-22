@@ -1,177 +1,189 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from .audit import HashChainAuditLog
+from pydantic import BaseModel, ConfigDict, Field
+
 from .engine import OpenJev
-from .types import Choice, Noul, Score
+from .models import Choice, Noul, Score
+
+
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class LedgerItem(_StrictModel):
+    id: str
+    requirement: str
+    priority: Literal["P0", "P1", "P2", "Optional"]
+    status: Literal[
+        "TODO",
+        "IN_PROGRESS",
+        "DONE",
+        "BLOCKED",
+        "NOT_APPLICABLE",
+        "SUPERSEDED",
+    ]
+    evidence: str | None = None
+    required: bool = True
+
+
+class GoalLoopState(_StrictModel):
+    project_goal: str
+    definition_of_done: list[str]
+    ledger: list[LedgerItem]
+    latest_user_request: str | None = None
+    latest_validation: str | None = None
+    candidate_completion_claim: str | None = None
+    extra_context: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class AuditDecision:
-    allowed: bool
-    reason: str
-    blockers: list[str]
-    semantic: dict[str, Any] | None
+class GoalLoopPolicy:
+    missing_requirement_threshold: float = 0.60
+    evidence_gap_threshold: float = 0.55
+    completion_semantic_threshold: float = 0.85
+    high_risk_score: float = 3.0
+
+
+class GoalLoopDecision(_StrictModel):
+    hard_gate_passed: bool
+    final_action: Literal["CONTINUE", "REPAIR", "REVALIDATE", "ESCALATE", "COMPLETE_CANDIDATE"]
+    reasons: list[str]
+    semantic: dict[str, Any] = Field(default_factory=dict)
 
 
 class GoalLoopAuditor:
-    def __init__(
-        self,
-        jev: OpenJev,
-        *,
-        audit_log: HashChainAuditLog | None = None,
-        missing_threshold: float = 0.60,
-        evidence_gap_threshold: float = 0.55,
-        completion_safe_threshold: float = 0.85,
-        risk_threshold: float = 3.0,
-    ):
-        self.jev = jev
-        self.audit_log = audit_log
-        self.missing_threshold = missing_threshold
-        self.evidence_gap_threshold = evidence_gap_threshold
-        self.completion_safe_threshold = completion_safe_threshold
-        self.risk_threshold = risk_threshold
+    """
+    Decision layer for Goal Loop.
 
-    @staticmethod
-    def deterministic_blockers(ledger: list[dict[str, Any]]) -> list[str]:
-        blockers: list[str] = []
-        for index, item in enumerate(ledger):
-            required = bool(item.get("required", True))
-            if not required:
-                continue
-            status = str(item.get("status", "")).upper()
-            evidence = item.get("evidence")
-            validation_required = bool(item.get("validation_required", False))
-            validation_run = bool(item.get("validation_run", False))
-            name = item.get("id") or item.get("name") or f"item-{index + 1}"
+    Deterministic facts are enforced in code. The model is used only where the
+    state requires semantic judgment.
+    """
 
-            if status in {"TODO", "IN_PROGRESS", ""}:
-                blockers.append(f"{name}: required item is {status or 'UNSET'}")
-            elif status == "DONE" and not evidence:
-                blockers.append(f"{name}: DONE without evidence")
-            elif status == "BLOCKED" and not evidence:
-                blockers.append(f"{name}: BLOCKED without evidence")
-            if validation_required and not validation_run:
-                blockers.append(f"{name}: mandated validation not run")
-        return blockers
+    def __init__(self, engine: OpenJev, policy: GoalLoopPolicy | None = None):
+        self.engine = engine
+        self.policy = policy or GoalLoopPolicy()
 
-    def evaluate_completion(
-        self,
-        *,
-        ledger: list[dict[str, Any]],
-        state: dict[str, Any],
-    ) -> AuditDecision:
-        blockers = self.deterministic_blockers(ledger)
-        if blockers:
-            self._log("hard_gate_blocked", {"blockers": blockers}, decision=False)
-            return AuditDecision(False, "hard_gate", blockers, None)
+    def audit(self, state: GoalLoopState) -> GoalLoopDecision:
+        hard_reasons = self._hard_gate_reasons(state)
 
-        self._log("decision_requested", {"kind": "completion_candidate"})
-        result = self.jev.evaluate(
-            state={"ledger": ledger, **state},
+        semantic = self.engine.evaluate(
+            state=state.model_dump(mode="json"),
             questions={
                 "missing_requirement": Noul(
-                    instructions="Is a material user requirement likely missing from the ledger?"
+                    instructions=(
+                        "Based on the project goal, latest user request, definition of done, "
+                        "and ledger, at least one mandatory user requirement is likely missing "
+                        "from the ledger."
+                    ),
+                    criteria={
+                        "true": "A required user intent or deliverable is absent from the ledger.",
+                        "false": "The ledger appears to cover the mandatory requirements.",
+                    },
                 ),
                 "evidence_gap": Noul(
-                    instructions="Is the current completion evidence semantically insufficient?"
+                    instructions=(
+                        "At least one ledger item marked DONE appears to lack evidence that "
+                        "substantively proves its requirement."
+                    ),
                 ),
                 "completion_semantically_safe": Noul(
-                    instructions="Is it semantically safe to allow the final deterministic exit gate?"
+                    instructions=(
+                        "Ignoring no hard facts, the available semantic evidence supports "
+                        "allowing this task to enter its final completion gate now."
+                    ),
                 ),
                 "next_action": Choice(
-                    instructions="Choose the safest next workflow action.",
+                    instructions="Choose the safest next Goal Loop action.",
                     criteria={
-                        "continue": "Continue an unresolved requirement.",
-                        "repair": "Repair implementation or evidence.",
-                        "escalate": "Escalate to a human or stronger model.",
-                        "complete": "Proceed to the final deterministic exit gate.",
+                        "CONTINUE": "Continue an unresolved requirement or missing deliverable.",
+                        "REPAIR": "Repair an implementation or artifact that does not meet acceptance.",
+                        "REVALIDATE": "Run validation again because evidence is missing/stale/insufficient.",
+                        "ESCALATE": "A genuine ambiguity or external boundary requires a human or stronger reasoning model.",
+                        "COMPLETE_CANDIDATE": "All hard requirements appear satisfied and final completion checks may run.",
                     },
                 ),
                 "premature_completion_risk": Score(
-                    instructions="How risky is it to declare completion now?",
+                    instructions="Risk of falsely declaring COMPLETE at this moment.",
                     criteria=[
-                        "Very low risk",
-                        "Low risk",
-                        "Moderate risk",
-                        "High risk",
-                        "Very high risk",
+                        "Negligible",
+                        "Low",
+                        "Moderate",
+                        "High",
+                        "Very high",
                     ],
                 ),
             },
         )
-        answers = result.answers
+
+        answers = semantic.answers
         missing = answers["missing_requirement"]
         evidence_gap = answers["evidence_gap"]
-        completion_safe = answers["completion_semantically_safe"]
+        safe = answers["completion_semantically_safe"]
         next_action = answers["next_action"]
         risk = answers["premature_completion_risk"]
 
-        semantic = {
-            "missing_requirement": missing.probability,
-            "evidence_gap": evidence_gap.probability,
-            "completion_semantically_safe": completion_safe.probability,
-            "next_action": next_action.label,
-            "premature_completion_risk": risk.expected_score,
-        }
-
-        denied_reasons: list[str] = []
-        if missing.probability >= self.missing_threshold:
-            denied_reasons.append("semantic_missing_requirement")
-            self._log(
-                "semantic_missing_requirement",
-                semantic,
-                probability=missing.probability,
-                threshold=self.missing_threshold,
-                decision=True,
+        reasons = list(hard_reasons)
+        if missing.probability >= self.policy.missing_requirement_threshold:
+            reasons.append(
+                f"semantic missing-requirement probability={missing.probability:.3f}"
             )
-        if evidence_gap.probability >= self.evidence_gap_threshold:
-            denied_reasons.append("semantic_evidence_gap")
-            self._log(
-                "semantic_evidence_gap",
-                semantic,
-                probability=evidence_gap.probability,
-                threshold=self.evidence_gap_threshold,
-                decision=True,
-            )
-        if completion_safe.probability < self.completion_safe_threshold:
-            denied_reasons.append("completion_not_safe")
-        if next_action.label != "complete":
-            denied_reasons.append(f"next_action={next_action.label}")
-        if risk.expected_score >= self.risk_threshold:
-            denied_reasons.append("premature_completion_risk")
+        if evidence_gap.probability >= self.policy.evidence_gap_threshold:
+            reasons.append(f"semantic evidence-gap probability={evidence_gap.probability:.3f}")
 
-        allowed = not denied_reasons
-        self._log("decision_returned", semantic, decision=allowed)
-        self._log(
-            "completion_candidate_allowed" if allowed else "completion_candidate_denied",
-            {"reasons": denied_reasons, **semantic},
-            decision=allowed,
-        )
-        return AuditDecision(
-            allowed=allowed,
-            reason="semantic_gate_allowed" if allowed else "semantic_gate_denied",
-            blockers=denied_reasons,
-            semantic=semantic,
+        hard_gate_passed = not hard_reasons
+
+        if not hard_gate_passed:
+            action = self._deterministic_action_for_hard_failure(state)
+        elif missing.probability >= self.policy.missing_requirement_threshold:
+            action = "CONTINUE"
+        elif evidence_gap.probability >= self.policy.evidence_gap_threshold:
+            action = "REVALIDATE"
+        elif risk.score >= self.policy.high_risk_score:
+            action = "REVALIDATE"
+            reasons.append(f"premature-completion risk score={risk.score:.3f}")
+        elif (
+            safe.probability >= self.policy.completion_semantic_threshold
+            and next_action.choice == "COMPLETE_CANDIDATE"
+        ):
+            action = "COMPLETE_CANDIDATE"
+        else:
+            action = next_action.choice
+            if action == "COMPLETE_CANDIDATE":
+                action = "REVALIDATE"
+                reasons.append(
+                    "model suggested completion but semantic completion threshold was not met"
+                )
+
+        return GoalLoopDecision(
+            hard_gate_passed=hard_gate_passed,
+            final_action=action,
+            reasons=reasons,
+            semantic=semantic.model_dump(mode="json"),
         )
 
-    def _log(
-        self,
-        event_type: str,
-        payload: Any,
-        *,
-        probability: float | None = None,
-        threshold: float | None = None,
-        decision: bool | None = None,
-    ) -> None:
-        if self.audit_log is not None:
-            self.audit_log.append(
-                event_type,
-                payload,
-                probability=probability,
-                threshold=threshold,
-                decision=decision,
-            )
+    @staticmethod
+    def _hard_gate_reasons(state: GoalLoopState) -> list[str]:
+        reasons: list[str] = []
+        for item in state.ledger:
+            if not item.required:
+                continue
+            if item.status in {"TODO", "IN_PROGRESS"}:
+                reasons.append(f"{item.id}: required item is {item.status}")
+            elif item.status == "DONE" and not item.evidence:
+                reasons.append(f"{item.id}: DONE without evidence")
+            elif item.status == "BLOCKED" and not item.evidence:
+                reasons.append(f"{item.id}: BLOCKED without evidence")
+        if not state.definition_of_done:
+            reasons.append("definition_of_done is empty")
+        return reasons
 
+    @staticmethod
+    def _deterministic_action_for_hard_failure(state: GoalLoopState):
+        if any(item.required and item.status == "DONE" and not item.evidence for item in state.ledger):
+            return "REVALIDATE"
+        if any(item.required and item.status == "BLOCKED" and not item.evidence for item in state.ledger):
+            return "ESCALATE"
+        return "CONTINUE"

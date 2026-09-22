@@ -1,144 +1,151 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from .schema import response_schema
-from .types import (
+from .calibration import (
+    choice_confidence,
+    normalize_distribution,
+    score_confidence,
+    score_expected_value,
+)
+from .models import (
     Choice,
     ChoiceAnswer,
-    EvaluationResult,
+    DecisionResponse,
     Noul,
     NoulAnswer,
     Question,
     Score,
     ScoreAnswer,
+    Usage,
 )
+from .providers.base import DecisionProvider
+from .schema import output_schema, provider_payload
 
 
 class OpenJev:
-    def __init__(self, provider: Any):
-        if provider is None or not hasattr(provider, "evaluate"):
-            raise TypeError("provider must expose evaluate(request)")
+    def __init__(
+        self,
+        provider: DecisionProvider,
+        *,
+        malformed_retries: int = 2,
+        noul_threshold: float = 0.5,
+    ):
+        if malformed_retries < 0:
+            raise ValueError("malformed_retries must be >= 0")
+        if not 0.0 <= noul_threshold <= 1.0:
+            raise ValueError("noul_threshold must be in [0,1]")
         self.provider = provider
+        self.malformed_retries = malformed_retries
+        self.noul_threshold = noul_threshold
 
     def evaluate(
         self,
         *,
-        state: dict[str, Any],
-        questions: dict[str, Question],
-    ) -> EvaluationResult:
-        if not isinstance(state, dict):
-            raise TypeError("state must be a dict")
-        if not isinstance(questions, dict) or not questions:
-            raise ValueError("questions must be a non-empty dict")
-        for name, question in questions.items():
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError("question names must be non-empty strings")
-            if not isinstance(question, (Noul, Choice, Score)):
-                raise TypeError(f"unsupported question {name!r}")
+        state: Any,
+        questions: Mapping[str, Question],
+    ) -> DecisionResponse:
+        if not questions:
+            raise ValueError("At least one question is required.")
+        if len(set(questions)) != len(questions):
+            raise ValueError("Question IDs must be unique.")
 
-        request = {
-            "state": state,
-            "questions": {name: question.to_spec() for name, question in questions.items()},
-            "response_schema": response_schema(questions),
-        }
-        attempts = max(1, int(getattr(self.provider, "max_retries", 0)) + 1)
-        last_error: Exception | None = None
+        schema = output_schema(questions)
+        payload = provider_payload(state, questions)
 
-        for attempt in range(attempts):
-            raw = self.provider.evaluate(request)
+        attempts = []
+        repair_hint = None
+
+        for attempt in range(self.malformed_retries + 1):
+            result = self.provider.decide(payload, schema, repair_hint=repair_hint)
+            attempts.append(result)
             try:
-                answers = self._parse_response(raw, questions)
-                return EvaluationResult(answers=answers, request=request, raw_response=raw)
-            except (TypeError, ValueError, KeyError) as exc:
-                last_error = exc
-                callback = getattr(self.provider, "on_malformed", None)
-                if callable(callback):
-                    callback(error=exc, raw_response=raw, attempt=attempt + 1)
-                if attempt + 1 >= attempts:
-                    break
+                answers, debug = self._decode(questions, result.data)
+                return DecisionResponse(
+                    answers=answers,
+                    usage=Usage(
+                        input_tokens=_sum_optional(a.input_tokens for a in attempts),
+                        output_tokens=_sum_optional(a.output_tokens for a in attempts),
+                        latency_ms=sum((a.latency_ms or 0.0) for a in attempts),
+                        attempts=len(attempts),
+                    ),
+                    debug={
+                        "probability_diagnostics": debug,
+                        "provider_debug": [a.debug for a in attempts],
+                    },
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                repair_hint = (
+                    f"Previous output was invalid: {type(exc).__name__}: {exc}. "
+                    "Return a complete JSON object matching the schema exactly."
+                )
+                if attempt >= self.malformed_retries:
+                    raise ValueError(
+                        f"Provider output remained invalid after {len(attempts)} attempts: {exc}"
+                    ) from exc
 
-        assert last_error is not None
-        raise ValueError(f"provider returned invalid structured output: {last_error}") from last_error
+        raise AssertionError("unreachable")
 
-    @staticmethod
-    def _normalize(
-        values: dict[str, Any],
-        expected_labels: list[str],
-    ) -> dict[str, float]:
-        if not isinstance(values, dict):
-            raise TypeError("probabilities must be an object")
-        if set(values) != set(expected_labels):
-            raise ValueError(
-                f"probability labels must match exactly: expected {expected_labels}, got {list(values)}"
-            )
-        converted: dict[str, float] = {}
-        for label in expected_labels:
-            value = float(values[label])
-            if value < 0:
-                raise ValueError("probabilities cannot be negative")
-            converted[label] = value
-        total = sum(converted.values())
-        if total <= 0:
-            raise ValueError("probabilities must sum to a positive value")
-        return {label: value / total for label, value in converted.items()}
+    def _decode(self, questions: Mapping[str, Question], raw: dict[str, Any]):
+        raw_answers = raw["answers"]
+        if set(raw_answers) != set(questions):
+            missing = sorted(set(questions) - set(raw_answers))
+            extra = sorted(set(raw_answers) - set(questions))
+            raise ValueError(f"Answer keys mismatch; missing={missing}, extra={extra}")
 
-    @classmethod
-    def _parse_response(
-        cls,
-        raw: dict[str, Any],
-        questions: dict[str, Question],
-    ) -> dict[str, Any]:
-        if not isinstance(raw, dict):
-            raise TypeError("provider response must be an object")
-        if set(raw) != set(questions):
-            raise ValueError("provider response keys must match question keys exactly")
+        decoded = {}
+        diagnostics = {}
 
-        answers: dict[str, Any] = {}
-        for name, question in questions.items():
-            item = raw[name]
-            if not isinstance(item, dict):
-                raise TypeError(f"answer {name!r} must be an object")
+        for qid, q in questions.items():
+            value = raw_answers[qid]
 
-            if isinstance(question, Noul):
-                if set(item) != {"probability"}:
-                    raise ValueError(f"Noul answer {name!r} must contain only probability")
-                probability = float(item["probability"])
-                if not 0 <= probability <= 1:
-                    raise ValueError("Noul probability must be between 0 and 1")
-                answers[name] = NoulAnswer(
+            if isinstance(q, Noul):
+                probability = float(value)
+                if not 0.0 <= probability <= 1.0:
+                    raise ValueError(f"Noul probability for {qid!r} must be in [0,1].")
+                decoded[qid] = NoulAnswer(
                     probability=probability,
-                    decision=probability >= 0.5,
-                    confidence=max(probability, 1 - probability),
+                    value=probability >= self.noul_threshold,
                 )
+                diagnostics[qid] = {"normalization_error": 0.0}
                 continue
 
-            if isinstance(question, Choice):
-                if not set(item).issubset({"label", "probabilities"}) or "probabilities" not in item:
-                    raise ValueError(f"Choice answer {name!r} has invalid fields")
-                probabilities = cls._normalize(item["probabilities"], list(question.criteria))
-                inferred = max(probabilities, key=probabilities.get)
-                label = item.get("label", inferred)
-                if label not in question.criteria:
-                    raise ValueError(f"unknown choice label {label!r}")
-                answers[name] = ChoiceAnswer(
-                    label=label,
-                    probabilities=probabilities,
-                    confidence=probabilities[label],
+            if not isinstance(value, dict):
+                raise TypeError(f"{qid!r} requires a probability mapping.")
+
+            if isinstance(q, Choice):
+                expected_labels = list(q.criteria)
+                if set(value) != set(expected_labels):
+                    raise ValueError(f"{qid!r} labels must be exactly {expected_labels!r}.")
+                probs, error = normalize_distribution({label: value[label] for label in expected_labels})
+                selected = max(expected_labels, key=probs.__getitem__)
+                decoded[qid] = ChoiceAnswer(
+                    choice=selected,
+                    probabilities=probs,
+                    confidence=choice_confidence(probs),
                 )
+                diagnostics[qid] = {"normalization_error": error}
                 continue
 
-            if isinstance(question, Score):
-                if set(item) != {"probabilities"}:
-                    raise ValueError(f"Score answer {name!r} must contain only probabilities")
-                labels = [str(index) for index in range(len(question.criteria))]
-                probabilities = cls._normalize(item["probabilities"], labels)
-                expected_score = sum(int(label) * probability for label, probability in probabilities.items())
-                answers[name] = ScoreAnswer(
-                    probabilities=probabilities,
-                    expected_score=expected_score,
-                    confidence=max(probabilities.values()),
+            if isinstance(q, Score):
+                expected_labels = [str(i) for i in range(len(q.criteria))]
+                if set(value) != set(expected_labels):
+                    raise ValueError(f"{qid!r} score labels must be exactly {expected_labels!r}.")
+                probs, error = normalize_distribution({label: value[label] for label in expected_labels})
+                decoded[qid] = ScoreAnswer(
+                    score=score_expected_value(probs),
+                    probabilities=probs,
+                    confidence=score_confidence(probs),
                 )
+                diagnostics[qid] = {"normalization_error": error}
+                continue
 
-        return answers
+            raise TypeError(f"Unsupported question type: {type(q)!r}")
 
+        return decoded, diagnostics
+
+
+def _sum_optional(values):
+    values = list(values)
+    return None if any(v is None for v in values) else sum(values)

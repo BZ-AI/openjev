@@ -100,4 +100,3 @@ OpenJev   = typed probabilistic semantic judgment
 
 This separation matters because the same OpenJev layer can later be used by other
 agent frameworks without importing the entire Goal Loop policy.
-

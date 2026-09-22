@@ -127,4 +127,3 @@ MIT. See `LICENSE`.
 
 Third-party acknowledgements and the clean-room boundary are documented in
 `THIRD_PARTY_NOTICES.md`.
-

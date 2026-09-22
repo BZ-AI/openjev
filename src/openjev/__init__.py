@@ -1,16 +1,25 @@
 from .engine import OpenJev
-from .types import Choice, ChoiceAnswer, EvaluationResult, Noul, NoulAnswer, Score, ScoreAnswer
+from .goal_loop import GoalLoopAuditor, GoalLoopDecision, GoalLoopPolicy
+from .models import (
+    Choice,
+    ChoiceAnswer,
+    DecisionResponse,
+    Noul,
+    NoulAnswer,
+    Score,
+    ScoreAnswer,
+)
 
 __all__ = [
     "Choice",
     "ChoiceAnswer",
-    "EvaluationResult",
+    "DecisionResponse",
+    "GoalLoopAuditor",
+    "GoalLoopDecision",
+    "GoalLoopPolicy",
     "Noul",
     "NoulAnswer",
     "OpenJev",
     "Score",
     "ScoreAnswer",
 ]
-
-__version__ = "0.1.0"
-

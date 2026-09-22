@@ -1,67 +1,103 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from .types import Choice, Noul, Question, Score
+from .models import Choice, Noul, Question, Score
 
 
-def response_schema(questions: dict[str, Question]) -> dict[str, Any]:
+def output_schema(questions: Mapping[str, Question]) -> dict[str, Any]:
+    if not questions:
+        raise ValueError("At least one question is required.")
+
     properties: dict[str, Any] = {}
-    required: list[str] = []
 
-    for name, question in questions.items():
-        required.append(name)
+    for qid, question in questions.items():
         if isinstance(question, Noul):
-            properties[name] = {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["probability"],
-                "properties": {
-                    "probability": {"type": "number", "minimum": 0, "maximum": 1}
-                },
+            properties[qid] = {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Probability that the answer is yes/true.",
             }
         elif isinstance(question, Choice):
             labels = list(question.criteria)
-            properties[name] = {
+            properties[qid] = {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["probabilities"],
+                "required": labels,
                 "properties": {
-                    "label": {"type": "string", "enum": labels},
-                    "probabilities": {
-                        "type": "object",
-                        "required": labels,
-                        "additionalProperties": False,
-                        "properties": {
-                            label: {"type": "number", "minimum": 0} for label in labels
-                        },
-                    },
+                    label: {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": _to_text(question.criteria[label]),
+                    }
+                    for label in labels
                 },
             }
         elif isinstance(question, Score):
-            labels = [str(index) for index in range(len(question.criteria))]
-            properties[name] = {
+            labels = [str(i) for i in range(len(question.criteria))]
+            properties[qid] = {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["probabilities"],
+                "required": labels,
                 "properties": {
-                    "probabilities": {
-                        "type": "object",
-                        "required": labels,
-                        "additionalProperties": False,
-                        "properties": {
-                            label: {"type": "number", "minimum": 0} for label in labels
-                        },
+                    label: {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": _to_text(question.criteria[int(label)]),
                     }
+                    for label in labels
                 },
             }
         else:
-            raise TypeError(f"unsupported question type: {type(question).__name__}")
+            raise TypeError(f"Unsupported question type: {type(question)!r}")
 
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": required,
-        "properties": properties,
+        "required": ["answers"],
+        "properties": {
+            "answers": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": list(questions),
+                "properties": properties,
+            }
+        },
     }
 
+
+def provider_payload(state: Any, questions: Mapping[str, Question]) -> dict[str, Any]:
+    return {
+        "state": state,
+        "questions": {
+            qid: {
+                "type": q.type,
+                "instructions": q.instructions,
+                "criteria": q.criteria,
+            }
+            for qid, q in questions.items()
+        },
+        "answer_contract": {
+            "noul": "Return one probability in [0,1] for yes/true.",
+            "choice": "Return one probability for every allowed label.",
+            "score": "Return one probability for every ordered score level.",
+            "rules": [
+                "Answer every question exactly once.",
+                "Do not add labels not present in the question.",
+                "For choice/score, probabilities should sum to 1.",
+                "Return JSON only.",
+            ],
+        },
+    }
+
+
+def _to_text(value: Any) -> str:
+    if value is None:
+        return "No additional description."
+    if isinstance(value, str):
+        return value
+    return repr(value)

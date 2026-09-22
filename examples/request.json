@@ -1,0 +1,22 @@
+{
+  "state": {
+    "task": "Review an agent's completion claim",
+    "required_todo": 0,
+    "failed_tests": 0
+  },
+  "questions": {
+    "safe_to_finish": {
+      "type": "noul",
+      "instructions": "The available evidence supports entering the final completion gate."
+    },
+    "next_action": {
+      "type": "choice",
+      "instructions": "Choose the next action.",
+      "criteria": {
+        "continue": "Do more required work.",
+        "revalidate": "Run validation again.",
+        "finish": "Enter final completion checks."
+      }
+    }
+  }
+}

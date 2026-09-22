@@ -1,40 +1,59 @@
 from openjev import OpenJev
-from openjev.goal_loop import GoalLoopAuditor
+from openjev.goal_loop import GoalLoopAuditor, GoalLoopState, LedgerItem
 from openjev.providers import MockProvider
 
-
+# Offline demo: the provider is deterministic so the architecture can be tested
+# without any hosted model.
 provider = MockProvider(
     {
-        "missing_requirement": {"probability": 0.10},
-        "evidence_gap": {"probability": 0.08},
-        "completion_semantically_safe": {"probability": 0.93},
-        "next_action": {
-            "label": "complete",
-            "probabilities": {
-                "continue": 0.02,
-                "repair": 0.02,
-                "escalate": 0.01,
-                "complete": 0.95,
+        "answers": {
+            "missing_requirement": 0.08,
+            "evidence_gap": 0.12,
+            "completion_semantically_safe": 0.93,
+            "next_action": {
+                "CONTINUE": 0.01,
+                "REPAIR": 0.01,
+                "REVALIDATE": 0.02,
+                "ESCALATE": 0.01,
+                "COMPLETE_CANDIDATE": 0.95,
             },
-        },
-        "premature_completion_risk": {
-            "probabilities": {"0": 0.70, "1": 0.20, "2": 0.07, "3": 0.02, "4": 0.01}
-        },
+            "premature_completion_risk": {
+                "0": 0.72,
+                "1": 0.20,
+                "2": 0.06,
+                "3": 0.015,
+                "4": 0.005,
+            },
+        }
     }
 )
-auditor = GoalLoopAuditor(OpenJev(provider))
-decision = auditor.evaluate_completion(
-    ledger=[
-        {
-            "id": "implementation",
-            "required": True,
-            "status": "DONE",
-            "evidence": "tests passed",
-            "validation_required": True,
-            "validation_run": True,
-        }
-    ],
-    state={"task": "Ship the example safely"},
-)
-print(decision)
 
+engine = OpenJev(provider)
+auditor = GoalLoopAuditor(engine)
+
+state = GoalLoopState(
+    project_goal="Ship the requested feature with evidence-backed acceptance.",
+    definition_of_done=[
+        "All required ledger items are complete.",
+        "Required validations passed.",
+        "No evidence-free DONE claims.",
+    ],
+    ledger=[
+        LedgerItem(
+            id="R1",
+            requirement="Implement feature",
+            priority="P0",
+            status="DONE",
+            evidence="tests/test_feature.py passed",
+        ),
+        LedgerItem(
+            id="R2",
+            requirement="Run regression checks",
+            priority="P0",
+            status="DONE",
+            evidence="pytest: 24 passed",
+        ),
+    ],
+)
+
+print(auditor.audit(state).model_dump_json(indent=2))

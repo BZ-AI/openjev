@@ -1,16 +1,20 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "openjev"
 version = "0.1.0"
-description = "Independent clean-room runtime for typed probabilistic decisions."
+description = "Clean-room, open-source typed probabilistic decision layer for software and agents."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "OpenJev contributors" }]
-dependencies = []
+license = {text = "MIT"}
+authors = [{name = "Xiao Zhu AI / Community"}]
+dependencies = [
+  "pydantic>=2.8,<3",
+  "httpx>=0.27,<1"
+]
+keywords = ["ai", "agents", "decision-model", "structured-output", "calibration"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
@@ -25,6 +29,5 @@ where = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py310"
-
